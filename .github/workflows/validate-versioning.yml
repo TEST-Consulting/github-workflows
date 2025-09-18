@@ -1,0 +1,137 @@
+name: Reusable Version Validation
+on:
+  workflow_call:
+
+jobs:
+  validate-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # Need history to compare versions
+
+      - name: Check PR title format
+        run: |
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          if [[ $PR_TITLE =~ ^\[(MAJOR|MINOR|PATCH)\] ]]; then
+            echo "✅ PR title format is correct: $PR_TITLE"
+            echo "VERSION_TYPE=${BASH_REMATCH[1]}" >> $GITHUB_ENV
+          else
+            echo "❌ ERROR: PR title must start with [MAJOR], [MINOR], or [PATCH]"
+            exit 1
+          fi
+
+      - name: Check if version.json was updated
+        run: |
+          # Create version.json if it doesn't exist on main
+          git checkout origin/main
+          if [ ! -f version.json ]; then
+            echo '{"major": 1, "minor": 0, "patch": 0}' > version.json.main
+          else
+            cp version.json version.json.main
+          fi
+
+          # Switch back to PR branch
+          git checkout ${{ github.event.pull_request.head.sha }}
+
+          # Check if version.json exists and was changed
+          if [ ! -f version.json ]; then
+            echo "❌ ERROR: version.json file is missing"
+            exit 1
+          fi
+
+          # Compare versions
+          if diff -q version.json version.json.main > /dev/null; then
+            echo "❌ ERROR: version.json has not been updated"
+            echo "Your PR is marked as [$VERSION_TYPE] but version.json is unchanged"
+            echo "Please update the version number in version.json"
+            exit 1
+          else
+            echo "✅ version.json has been updated"
+          fi
+
+      - name: Validate version increment
+        run: |
+          # Read both versions
+          OLD_MAJOR=$(cat version.json.main | jq -r '.major')
+          OLD_MINOR=$(cat version.json.main | jq -r '.minor')
+          OLD_PATCH=$(cat version.json.main | jq -r '.patch')
+
+          NEW_MAJOR=$(cat version.json | jq -r '.major')
+          NEW_MINOR=$(cat version.json | jq -r '.minor')
+          NEW_PATCH=$(cat version.json | jq -r '.patch')
+
+          # Validate the increment matches the PR title
+          case $VERSION_TYPE in
+            "MAJOR")
+              if [[ $NEW_MAJOR -eq $((OLD_MAJOR + 1)) && $NEW_MINOR -eq 0 && $NEW_PATCH -eq 0 ]]; then
+                echo "✅ Version correctly updated: $OLD_MAJOR.$OLD_MINOR.$OLD_PATCH → $NEW_MAJOR.$NEW_MINOR.$NEW_PATCH"
+              else
+                echo "❌ ERROR: Expected MAJOR version bump ($OLD_MAJOR.$OLD_MINOR.$OLD_PATCH → $((OLD_MAJOR + 1)).0.0)"
+                echo "Got: $NEW_MAJOR.$NEW_MINOR.$NEW_PATCH"
+                exit 1
+              fi
+              ;;
+            "MINOR")
+              if [[ $NEW_MAJOR -eq $OLD_MAJOR && $NEW_MINOR -eq $((OLD_MINOR + 1)) && $NEW_PATCH -eq 0 ]]; then
+                echo "✅ Version correctly updated: $OLD_MAJOR.$OLD_MINOR.$OLD_PATCH → $NEW_MAJOR.$NEW_MINOR.$NEW_PATCH"
+              else
+                echo "❌ ERROR: Expected MINOR version bump ($OLD_MAJOR.$OLD_MINOR.$OLD_PATCH → $OLD_MAJOR.$((OLD_MINOR + 1)).0)"
+                echo "Got: $NEW_MAJOR.$NEW_MINOR.$NEW_PATCH"
+                exit 1
+              fi
+              ;;
+            "PATCH")
+              if [[ $NEW_MAJOR -eq $OLD_MAJOR && $NEW_MINOR -eq $OLD_MINOR && $NEW_PATCH -eq $((OLD_PATCH + 1)) ]]; then
+                echo "✅ Version correctly updated: $OLD_MAJOR.$OLD_MINOR.$OLD_PATCH → $NEW_MAJOR.$NEW_MINOR.$NEW_PATCH"
+              else
+                echo "❌ ERROR: Expected PATCH version bump ($OLD_MAJOR.$OLD_MINOR.$OLD_PATCH → $OLD_MAJOR.$OLD_MINOR.$((OLD_PATCH + 1)))"
+                echo "Got: $NEW_MAJOR.$NEW_MINOR.$NEW_PATCH"
+                exit 1
+              fi
+              ;;
+          esac
+
+      - name: Check if changelog was updated
+        run: |
+          # Check if CHANGELOG.md exists
+          if [ ! -f CHANGELOG.md ]; then
+            echo "❌ ERROR: CHANGELOG.md file is missing"
+            exit 1
+          fi
+
+          git checkout origin/main
+          # Handle case where CHANGELOG.md doesn't exist on main yet
+          if [ ! -f CHANGELOG.md ]; then
+            echo "✅ CHANGELOG.md is new (doesn't exist on main)"
+            git checkout ${{ github.event.pull_request.head.sha }}
+          else
+            cp CHANGELOG.md CHANGELOG.md.main
+            git checkout ${{ github.event.pull_request.head.sha }}
+
+            if diff -q CHANGELOG.md CHANGELOG.md.main > /dev/null; then
+              echo "❌ ERROR: CHANGELOG.md has not been updated"
+              echo "Please add an entry for this $VERSION_TYPE change"
+              exit 1
+            else
+              echo "✅ CHANGELOG.md has been updated"
+            fi
+          fi
+
+      - name: Validate changelog entry format
+        run: |
+          # Extract version from version.json
+          MAJOR=$(cat version.json | jq -r '.major')
+          MINOR=$(cat version.json | jq -r '.minor')
+          PATCH=$(cat version.json | jq -r '.patch')
+          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+
+
+          if grep -q "## \[$NEW_VERSION\]" CHANGELOG.md; then
+            echo "✅ Found version entry for $NEW_VERSION in changelog"
+          else
+            echo "❌ ERROR: Missing changelog entry for version $NEW_VERSION"
+            echo "Please add: ## [$NEW_VERSION] - YYYY-MM-DD"
+            echo "followed by a list of changes as bullet points"
+            exit 1
+          fi
