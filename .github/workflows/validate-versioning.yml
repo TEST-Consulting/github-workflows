@@ -40,10 +40,28 @@ jobs:
             exit 1
           fi
 
-          # Compare versions
+                    # Compare versions
           if diff -q version.json version.json.main > /dev/null; then
+            OLD_MAJOR=$(cat version.json.main | jq -r '.major')
+            OLD_MINOR=$(cat version.json.main | jq -r '.minor')
+            OLD_PATCH=$(cat version.json.main | jq -r '.patch')
+            CURRENT_VERSION="$OLD_MAJOR.$OLD_MINOR.$OLD_PATCH"
+            
+            case $VERSION_TYPE in
+              "MAJOR")
+                EXPECTED_VERSION="$((OLD_MAJOR + 1)).0.0"
+                ;;
+              "MINOR")
+                EXPECTED_VERSION="$OLD_MAJOR.$((OLD_MINOR + 1)).0"
+                ;;
+              "PATCH")
+                EXPECTED_VERSION="$OLD_MAJOR.$OLD_MINOR.$((OLD_PATCH + 1))"
+                ;;
+            esac
+            
             echo "❌ ERROR: version.json has not been updated"
-            echo "Your PR is marked as [$VERSION_TYPE] but version.json is unchanged"
+            echo "Current version: $CURRENT_VERSION"
+            echo "Expected version for [$VERSION_TYPE] bump: $EXPECTED_VERSION"
             echo "Please update the version number in version.json"
             exit 1
           else
