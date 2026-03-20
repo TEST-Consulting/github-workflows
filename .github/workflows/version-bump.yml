@@ -1,6 +1,11 @@
 name: Reusable Version Bump
 on:
   workflow_call:
+    secrets:
+      APP_ID:
+        required: true
+      APP_PRIVATE_KEY:
+        required: true
 
 jobs:
   bump-version:
@@ -8,11 +13,18 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@v3
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Parse version bump type from PR title
         run: |
@@ -24,9 +36,8 @@ jobs:
             exit 1
           fi
 
-      - name: Calculate new version
+      - name: Calculate expected version
         run: |
-          # Get current version from main
           git show origin/main:version.json > version.main.json 2>/dev/null || echo '{"major": 1, "minor": 0, "patch": 0}' > version.main.json
 
           OLD_MAJOR=$(jq -r '.major' version.main.json)
@@ -60,7 +71,15 @@ jobs:
 
       - name: Update version.json
         run: |
-          echo "{\"major\": $NEW_MAJOR, \"minor\": $NEW_MINOR, \"patch\": $NEW_PATCH}" | jq . > version.json
+          CURRENT_MAJOR=$(jq -r '.major' version.json 2>/dev/null || echo "-1")
+          CURRENT_MINOR=$(jq -r '.minor' version.json 2>/dev/null || echo "-1")
+          CURRENT_PATCH=$(jq -r '.patch' version.json 2>/dev/null || echo "-1")
+
+          if [[ "$CURRENT_MAJOR" == "$NEW_MAJOR" && "$CURRENT_MINOR" == "$NEW_MINOR" && "$CURRENT_PATCH" == "$NEW_PATCH" ]]; then
+            echo "version.json already has $NEW_VERSION — no update needed"
+          else
+            echo "{\"major\": $NEW_MAJOR, \"minor\": $NEW_MINOR, \"patch\": $NEW_PATCH}" | jq . > version.json
+          fi
 
       - name: Update CHANGELOG.md
         run: |
@@ -69,15 +88,33 @@ jobs:
             exit 1
           fi
 
-          TODAY=$(date +%Y-%m-%d)
-
-          # Replace "## Unreleased" header with the versioned header
-          if grep -q "^## Unreleased" CHANGELOG.md; then
+          # Already has the versioned header — nothing to do
+          if grep -q "^## \[$NEW_VERSION\]" CHANGELOG.md; then
+            echo "CHANGELOG.md already has ## [$NEW_VERSION] — no update needed"
+          elif grep -q "^## Unreleased" CHANGELOG.md; then
+            TODAY=$(date +%Y-%m-%d)
             sed -i "s/^## Unreleased/## [$NEW_VERSION] - $TODAY/" CHANGELOG.md
           else
-            echo "ERROR: No '## Unreleased' section found in CHANGELOG.md"
+            echo "ERROR: CHANGELOG.md has no '## Unreleased' or '## [$NEW_VERSION]' section"
             echo "Please add your changes under a '## Unreleased' header"
             exit 1
+          fi
+
+      - name: Update RELEASE_NOTES.md (if exists)
+        run: |
+          if [ ! -f RELEASE_NOTES.md ]; then
+            exit 0
+          fi
+
+          if grep -q "^## \[$NEW_VERSION\]" RELEASE_NOTES.md; then
+            echo "RELEASE_NOTES.md already has ## [$NEW_VERSION] — no update needed"
+            echo "RELEASE_NOTES_UPDATED=true" >> $GITHUB_ENV
+          elif grep -q "^## Unreleased" RELEASE_NOTES.md; then
+            TODAY=$(date +%Y-%m-%d)
+            sed -i "s/^## Unreleased/## [$NEW_VERSION] - $TODAY/" RELEASE_NOTES.md
+            echo "RELEASE_NOTES_UPDATED=true" >> $GITHUB_ENV
+          else
+            echo "WARNING: RELEASE_NOTES.md exists but has no '## Unreleased' section — skipping"
           fi
 
       - name: Commit and push
@@ -86,11 +123,14 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git add version.json CHANGELOG.md
+          if [ "$RELEASE_NOTES_UPDATED" = "true" ]; then
+            git add RELEASE_NOTES.md
+          fi
 
-          # Only commit if there are changes
+          # Only commit if there are actual changes
           if git diff --cached --quiet; then
-            echo "No changes to commit"
+            echo "Everything already up to date — nothing to commit"
           else
-            git commit -m "[skip ci] bump version to $NEW_VERSION"
+            git commit -m "bump version to $NEW_VERSION"
             git push
           fi

@@ -10,7 +10,7 @@ This repository contains reusable GitHub Actions workflows for the TEST-Consulti
 
 The repo currently contains one reusable workflow:
 
-- **`validate-versioning.yml`** — A reusable workflow (triggered via `workflow_call`) that enforces versioning discipline on PRs. It validates:
+- **`version-bump.yml`** — A reusable workflow (triggered via `workflow_call`) that automates version bumping on PRs. It:
   1. PR title starts with `[MAJOR]`, `[MINOR]`, or `[PATCH]`
   2. `version.json` exists and was updated with the correct semver bump
   3. `CHANGELOG.md` exists, was updated, and contains an entry matching the format `## [X.Y.Z] - YYYY-MM-DD`
